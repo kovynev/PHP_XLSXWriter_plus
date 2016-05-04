@@ -1,0 +1,13 @@
+{
+  "name": "kovynev/php_xlsxwriter_plus",
+  "description": "PHP Library to write XLSX files",
+  "keywords": ["php", "library","xls", "xlsx", "excel"],
+  "type": "project",
+  "homepage": "https://github.com/kovynev/PHP_XLSXWriter_plus",
+  "autoload": {
+    "classmap": ["XLSXWriter.php"]
+  },
+  "require-dev": {
+    "phpunit/phpunit": "5.4.*"
+  }
+}
