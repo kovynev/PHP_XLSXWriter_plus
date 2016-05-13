@@ -1,5 +1,6 @@
 {
   "name": "kovynev/php_xlsxwriter_plus",
+  "version": "1.0.0",
   "description": "PHP Library to write XLSX files",
   "keywords": ["php", "library","xls", "xlsx", "excel"],
   "type": "project",
