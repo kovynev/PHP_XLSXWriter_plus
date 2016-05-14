@@ -82,9 +82,36 @@ Class XLSXWriter
         $this->defaultHorizontalAlign = $defaultHorizontalAlign;
     }
 
+    private $columnsStyles = [];
+    private $rowsStyles = [];
+    private $cellsStyles = [];
+
     private function setStyle($defaultStyle)
     {
         $this->defaultStyle = $defaultStyle;
+
+        foreach ($this->defaultStyle as $styleIndex => $style) {
+            if (!array_key_exists('width', $style)) {
+                $columns = $style['columns'];
+                $rows = $style['rows'];
+                $cells = $style['cells'];
+                if ($cells) {
+                    foreach ($cells as $cellXlsIndex) {
+                        $this->cellsStyles[$cellXlsIndex] = $styleIndex;
+                    }
+                }
+                else if ($columns) {
+                    foreach ($columns as $columnIndex) {
+                        $this->columnsStyles[$columnIndex] = $styleIndex;
+                    }
+                }
+                elseif ($rows) {
+                    foreach ($rows as $rowIndex) {
+                        $this->rowsStyles[$rowIndex] = $styleIndex;
+                    }
+                }
+            }
+        }
     }
 
     public function setStartRow($defaultStartRow)
@@ -113,6 +140,9 @@ Class XLSXWriter
         return $filename;
     }
 
+    /**
+     * Put xsl to stdout
+     */
     public function writeToStdOut()
     {
         $temp_file = $this->tempFilename();
@@ -120,6 +150,11 @@ Class XLSXWriter
         readfile($temp_file);
     }
 
+    /**
+     * Write to file
+     * Be avoid of memory exceed due to huge files!
+     * @return string
+     */
     public function writeToString()
     {
         $temp_file = $this->tempFilename();
@@ -128,6 +163,10 @@ Class XLSXWriter
         return $string;
     }
 
+    /**
+     * Write spreadsheet to file.
+     * @param string $filename
+     */
     public function writeToFile($filename)
     {
         @unlink($filename);//if the zip already exists, overwrite it
@@ -167,59 +206,154 @@ Class XLSXWriter
 
     /**
      * @param array $data
-     * @param string $sheet_name
+     * @param string $sheetName
      * @param array $headersTypes
      * @param array $styles
      * @param array $additionalData
      */
     public function writeSheet($data,
-                               $sheet_name = '',
+                               $sheetName = '',
                                $headersTypes = [],
                                $styles = [],
                                $additionalData = [])
     {
-        for ($i = 0; $i < count($styles); $i++) {
-            $styles[$i] += array('sheet' => $sheet_name);
-        }
-        $this->setStyle(array_merge((array)$this->defaultStyle, (array)$styles));
+        $styles = $this->prepareStyles($styles, $sheetName);
+        $this->setStyle($styles);
 
         $data = empty($data) ? array(array('')) : $data;
-
         $sheetFilename = $this->tempFilename();
         $sheet_default = 'Sheet' . (count($this->sheets_meta) + 1);
-        $sheet_name = !empty($sheet_name) ? $sheet_name : $sheet_default;
-        $this->sheets_meta[] = array('filename' => $sheetFilename, 'sheetname' => $sheet_name, 'xmlname' => strtolower($sheet_default) . ".xml");
-
+        $sheetName = !empty($sheetName) ? $sheetName : $sheet_default;
+        $this->sheets_meta[] = array('filename' => $sheetFilename, 'sheetname' => $sheetName, 'xmlname' => strtolower($sheet_default) . ".xml");
         $headerOffset = empty($headersTypes) ? 0 : $this->defaultStartRow + 1;
         $rowsCount = count($data) + $headerOffset;
         $columnsCount = count($data[self::array_first_key($data)]);
         $maxCell = self::xlsCell($rowsCount - 1, $columnsCount - 1);
-
         $tabselected = count($this->sheets_meta) == 1 ? 'true' : 'false';//only first sheet is selected
         $cellFormats = empty($headersTypes) ? array_fill(0, $columnsCount, 'string') : array_values($headersTypes);
-
         $headerRow = empty($headersTypes) ? array() : array_keys($headersTypes);
 
+
+        $fd = $this->openSheetFile($sheetFilename);
+        $this->writeDocumentHeader($fd, $maxCell, $tabselected);
+        $this->writeColumns($fd);
+
+        $this->sheetDataBegins($fd);
+        $this->writeHeaders($fd, $sheetName, $headerRow);
+        $this->writeData($fd, $data, $sheetName, $headerOffset, $cellFormats);
+        $this->writeCellsData($fd, $additionalData, $sheetName);
+        $this->sheetDataEnds($fd);
+
+        $this->mergeCells($fd, $sheetName);
+        $this->writeDocumentBottom($fd);
+        fclose($fd);
+    }
+
+    private function prepareStyles($styles, $sheetName) {
+        for ($i = 0; $i < count($styles); $i++) {
+            $styles[$i] += array('sheet' => $sheetName);
+        }
+        return array_merge((array) $this->defaultStyle, (array) $styles);
+    }
+
+    /**
+     * @param string $filenameWithData
+     * @param string $sheetName
+     * @param array $headersTypes
+     * @param array $styles
+     * @param array $additionalData
+     */
+    public function writeSheetUnbuffered($filenameWithData,
+                               $sheetName = '',
+                               $headersTypes = [],
+                               $styles = [],
+                               $additionalData = [])
+    {
+        $styles = $this->prepareStyles($styles, $sheetName);
+        $this->setStyle($styles);
+        $sheetFilename = $this->tempFilename();
+
+        $sheet_default = 'Sheet' . (count($this->sheets_meta) + 1);
+        $sheetName = !empty($sheetName) ? $sheetName : $sheet_default;
+        $this->sheets_meta[] = array('filename' => $sheetFilename, 'sheetname' => $sheetName, 'xmlname' => strtolower($sheet_default) . ".xml");
+
+        $headerOffset = empty($headersTypes) ? 0 : $this->defaultStartRow + 1;
+        $rowsCount = 0;
+        $columnsCount = 0;
+
+        $tabselected = count($this->sheets_meta) == 1 ? 'true' : 'false';//only first sheet is selected
+        $cellFormats = array_values($headersTypes);
+        $headerRow = array_keys($headersTypes);
+
+        $fd = $this->openSheetFile($sheetFilename);
+        $this->writeDocumentHeader($fd, '', $tabselected);
+        $this->writeColumns($fd);
+
+        $this->sheetDataBegins($fd);
+        $this->writeHeaders($fd, $sheetName, $headerRow);
+        $this->writeDataUnbuffered($fd, $filenameWithData, $headerOffset, $cellFormats, $rowsCount, $columnsCount);
+        $this->writeCellsData($fd, $additionalData, $sheetName);
+        $this->sheetDataEnds($fd);
+
+        $this->mergeCells($fd, $sheetName);
+        $this->writeDocumentBottom($fd);
+
+        $maxCell = self::xlsCell($rowsCount - 1, $columnsCount - 1);
+        $this->correctDocumentDimension($fd, $maxCell);
+
+        fclose($fd);
+    }
+
+    private function openSheetFile($sheetFilename) {
         $fd = fopen($sheetFilename, "w+");
         if ($fd === false) {
-            self::log("write failed in " . __CLASS__ . "::" . __FUNCTION__ . ".");
-            return;
+            throw new Exception("write failed in " . __CLASS__ . "::" . __FUNCTION__ . ".");
         }
+        return $fd;
+    }
 
-        fwrite($fd, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n");
-        fwrite($fd, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">');
-        fwrite($fd, '<sheetPr filterMode="false">');
-        fwrite($fd, '<pageSetUpPr fitToPage="false"/>');
-        fwrite($fd, '</sheetPr>');
-        fwrite($fd, '<dimension ref="A1:' . $maxCell . '"/>');
-        fwrite($fd, '<sheetViews>');
-        fwrite($fd, '<sheetView colorId="64" defaultGridColor="true" rightToLeft="false" showFormulas="false" showGridLines="true" showOutlineSymbols="true" showRowColHeaders="true" showZeros="true" tabSelected="' . $tabselected . '" topLeftCell="A1" view="normal" windowProtection="false" workbookViewId="0" zoomScale="100" zoomScaleNormal="100" zoomScalePageLayoutView="100">');
-        fwrite($fd, '<selection activeCell="A1" activeCellId="0" pane="topLeft" sqref="A1"/>');
-        fwrite($fd, '</sheetView>');
-        fwrite($fd, '</sheetViews>');
+    private function sheetDataBegins($fd) {
+        fwrite($fd, '<sheetData>');
+    }
+
+    private function sheetDataEnds($fd) {
+        fwrite($fd, '</sheetData>');
+    }
+
+    private function writeDocumentHeader($fd, $maxCell, $tabselected) {
+        fwrite($fd, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . PHP_EOL);
+        fwrite($fd, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'. PHP_EOL);
+        fwrite($fd, '<sheetPr filterMode="false">'. PHP_EOL);
+        fwrite($fd, '<pageSetUpPr fitToPage="false"/>'. PHP_EOL);
+        fwrite($fd, '</sheetPr>'. PHP_EOL);
+        fwrite($fd, '<dimension ref="A1:' . $maxCell . '                         "/>'. PHP_EOL);
+        fwrite($fd, '<sheetViews>'. PHP_EOL);
+        fwrite($fd, '<sheetView colorId="64" defaultGridColor="true" rightToLeft="false" showFormulas="false" showGridLines="true" showOutlineSymbols="true" showRowColHeaders="true" showZeros="true" tabSelected="' . $tabselected . '" topLeftCell="A1" view="normal" windowProtection="false" workbookViewId="0" zoomScale="100" zoomScaleNormal="100" zoomScalePageLayoutView="100">'. PHP_EOL);
+        fwrite($fd, '<selection activeCell="A1" activeCellId="0" pane="topLeft" sqref="A1"/>'. PHP_EOL);
+        fwrite($fd, '</sheetView>'. PHP_EOL);
+        fwrite($fd, '</sheetViews>'. PHP_EOL);
+    }
+
+    private function correctDocumentDimension($fd, $maxCell) {
+        fseek($fd, 0);
+        while (!feof($fd)) {
+            $lastPos = ftell($fd);
+            $line = fgets($fd);
+            if ($line) {
+                if (stripos($line, '<dimension ref="A1:') !== false) {
+                    $writePos = $lastPos + 19;
+                    fseek($fd, $writePos);
+                    fwrite($fd, $maxCell);
+                    break;
+                }
+            }
+        }
+        fseek($fd, 0, SEEK_END);
+    }
+
+
+    private function writeColumns($fd) {
         fwrite($fd, '<cols>');
-//        fwrite($fd, '<col collapsed="false" hidden="false" max="1025" min="1" style="0" width="11.5"/>');
-
         //fetch all columns with custom width
         $customWidthColumns = [];
         foreach ($this->defaultStyle as $style) {
@@ -237,25 +371,147 @@ Class XLSXWriter
             $i++;
         }
         fwrite($fd, '</cols>');
-        fwrite($fd, '<sheetData>');
+    }
 
+    private function writeHeaders($fd, $sheetName, $headerRow) {
         if (!empty($headerRow)) {
             fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($this->defaultStartRow + 1) . '">');
             foreach ($headerRow as $k => $v) {
-                $this->writeCell($fd, $this->defaultStartRow + 0, $this->defaultStartCol + $k, $v, $sheet_name);
+                $this->writeCell($fd, $this->defaultStartRow + 0, $this->defaultStartCol + $k, $sheetName);
             }
             fwrite($fd, '</row>');
         }
+    }
+
+    /**
+     * Reads data from $filenameWithData and writes it to $fd.
+     * Memory efficient. Does not load files fully.
+     *
+     * filenameWithData has serialize() lines of data.
+     *
+     * @param $fd
+     * @param string $filenameWithData
+     * @param int $headerOffset
+     * @param array $cellFormats
+     * @param int $rowsCount
+     * @param int $columnsCount
+     */
+    private function writeDataUnbuffered($fd, $filenameWithData, $headerOffset, $cellFormats, &$rowsCount, &$columnsCount) {
+        $fData = fopen($filenameWithData, "r");
+        $i = 0;
+        $rowItemsCount = null;
+        $maxColumnIndex = 0;
+
+        while (!feof($fData)) {
+            $row = unserialize(fgets($fData));
+            if ($row) {
+                $rowsCount++;
+
+                if ($rowItemsCount === null) {
+                    $rowItemsCount = count($row);
+                }
+                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">');
+                for ($itemIndex = 0; $itemIndex < $rowItemsCount; $itemIndex++) {
+                    $rowNumber = $i + $headerOffset;
+                    $columnNumber = $this->defaultStartCol + $itemIndex;
+                    $value = $row[$itemIndex];
+                    $cellType = $cellFormats[$itemIndex];
+
+                    if($columnNumber >= $maxColumnIndex) {
+                        $maxColumnIndex = $columnNumber;
+                    }
+
+                    $cell = self::xlsCell($rowNumber, $columnNumber);
+                    $s = 0;
+                    if (isset($this->cellsStyles[$cell])){
+                        $s = $this->cellsStyles[$cell] + 1;
+                    }
+                    elseif (isset($this->rowsStyles[$rowNumber])) {
+                        $s = $this->rowsStyles[$rowNumber] + 1;
+                    }
+                    elseif (isset($this->columnsStyles[$columnNumber])) {
+                        $s = $this->columnsStyles[$columnNumber] + 1;
+                    }
+
+                    if (is_numeric($value)) {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'); //int, float, etc
+                    } else if ($cellType == 'date') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . intval(self::convertDateTime($value)) . '</v></c>');
+                    } else if ($cellType == 'datetime') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>');
+                    } else if ($value == '') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>');
+                    } else if ($value{0} == '=') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
+                    } else if ($value !== '') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                    }
+                }
+                $this->dumpToBuffer($fd, '</row>');
+            }
+            $i++;
+        }
+        $columnsCount = $maxColumnIndex;
+        $this->emptyBuffer($fd);
+        fclose($fData);
+    }
+
+    private $writeOperationsCount = 0;
+    private $writeBuffer = '';
+
+    /**
+     * It is faster to concat strings and write it to file later.
+     * This method puts strings to file once at 1000 calls
+     * @param $fd
+     * @param $string
+     */
+    private function dumpToBuffer($fd, $string) {
+        $this->writeBuffer .= $string;
+        $this->writeOperationsCount++;
+        if($this->writeOperationsCount > 1000) {
+            fwrite($fd, $this->writeBuffer);
+            $this->writeBuffer = '';
+            $this->writeOperationsCount = 0;
+        }
+    }
+
+    /**
+     * Push data to file if we have a tail
+     * @param $fd
+     */
+    private function emptyBuffer($fd) {
+        if ($this->writeBuffer) {
+            fwrite($fd, $this->writeBuffer);
+            $this->writeBuffer = '';
+            $this->writeOperationsCount = 0;
+        }
+    }
+
+    /**
+     * @param $fd
+     * @param $data
+     * @param $sheetName
+     * @param $headerOffset
+     * @param $cellFormats
+     */
+    private function writeData($fd, $data, $sheetName, $headerOffset, $cellFormats) {
         foreach ($data as $i => $row) {
             fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($i + $headerOffset + 1) . '">');
             foreach ($row as $k => $v) {
-                $this->writeCell($fd, $i + $headerOffset, $this->defaultStartCol + $k, $v, $sheet_name, $cellFormats[$k]);
+                $this->writeCell($fd, $i + $headerOffset, $this->defaultStartCol + $k, $v, $cellFormats[$k]);
             }
             fwrite($fd, '</row>');
         }
+    }
 
+    /**
+     * @param $fd
+     * @param array $cellsData
+     * @param string $sheetName
+     */
+    private function writeCellsData($fd, $cellsData, $sheetName) {
         $additionalDataMapped = [];
-        foreach ($additionalData as $xlsCell => $row) {
+        foreach ($cellsData as $xlsCell => $row) {
             $zeroBasedCoordinates = self::cellCoordinates($xlsCell);
             list($i, $k) = $zeroBasedCoordinates;
             $additionalDataMapped[$i][$k] = $row;
@@ -268,15 +524,18 @@ Class XLSXWriter
                 if (is_array($v)) {
                     list($cellValue, $cellType) = $v;
                 }
-                $this->writeCell($fd, $i, $k, $cellValue, $sheet_name, $cellType);
+                $this->writeCell($fd, $i, $k, $cellValue, $cellType);
             }
             fwrite($fd, '</row>');
         }
-        fwrite($fd, '</sheetData>');
+    }
 
-
-        //cells merging
-        $sheet = $this->sheets[$sheet_name];
+    /**
+     * @param $fd
+     * @param string $sheetName
+     */
+    private function mergeCells($fd, $sheetName) {
+        $sheet = $this->sheets[$sheetName];
         if (!empty($sheet->merge_cells)) {
             fwrite($fd, '<mergeCells>');
             foreach ($sheet->merge_cells as $range) {
@@ -284,7 +543,9 @@ Class XLSXWriter
             }
             fwrite($fd, '</mergeCells>');
         }
+    }
 
+    private function writeDocumentBottom($fd) {
         fwrite($fd, '<printOptions headings="false" gridLines="false" gridLinesSet="true" horizontalCentered="false" verticalCentered="false"/>');
         fwrite($fd, '<pageMargins left="0.5" right="0.5" top="1.0" bottom="1.0" header="0.5" footer="0.5"/>');
         fwrite($fd, '<pageSetup blackAndWhite="false" cellComments="none" copies="1" draft="false" firstPageNumber="1" fitToHeight="1" fitToWidth="1" horizontalDpi="300" orientation="portrait" pageOrder="downThenOver" paperSize="1" scale="100" useFirstPageNumber="true" usePrinterDefaults="false" verticalDpi="300"/>');
@@ -293,56 +554,45 @@ Class XLSXWriter
         fwrite($fd, '<oddFooter>&amp;C&amp;&quot;Times New Roman,Regular&quot;&amp;12Page &amp;P</oddFooter>');
         fwrite($fd, '</headerFooter>');
         fwrite($fd, '</worksheet>');
-        fclose($fd);
     }
 
-    public function markMergedCell($sheet_name, $start_cell_row, $start_cell_column, $end_cell_row, $end_cell_column)
+    /**
+     * Merge cells
+     * @param string $sheetName
+     * @param int $startCellRow
+     * @param int $startCellColumn
+     * @param int $endCellRow
+     * @param int $endCellColumn
+     */
+    public function markMergedCell($sheetName, $startCellRow, $startCellColumn, $endCellRow, $endCellColumn)
     {
-        $sheet = &$this->sheets[$sheet_name];
-        $startCell = self::xlsCell($start_cell_row, $start_cell_column);
-        $endCell = self::xlsCell($end_cell_row, $end_cell_column);
+        $sheet = &$this->sheets[$sheetName];
+        $startCell = self::xlsCell($startCellRow, $startCellColumn);
+        $endCell = self::xlsCell($endCellRow, $endCellColumn);
         $sheet->merge_cells[] = $startCell . ":" . $endCell;
     }
 
-    protected function writeCell($fd, $rowNumber, $columnNumber, $value, $sheetName, $cellType = '')
+    /**
+     * @param $fd
+     * @param int $rowNumber
+     * @param int $columnNumber
+     * @param $value
+     * @param string $cellType
+     * @internal param string $sheetName
+     */
+    protected function writeCell($fd, $rowNumber, $columnNumber, $value, $cellType = '')
     {
         $cell = self::xlsCell($rowNumber, $columnNumber);
-        $s = '0';
+        $s = 0;
         if ($this->defaultStyle) {
-            foreach ($this->defaultStyle as $key => $style) {
-                if (isset($style['sheet'])) {
-                    if ($style['sheet'] == $sheetName) {
-                        if (isset($style['allfilleddata'])) {
-                            $s = $key + 1;
-                        } else {
-                            if (!array_key_exists('width', $style)) {
-                                if (isset($style['columns'])) {
-                                    if (is_array($style['columns'])) {
-                                        if (in_array($columnNumber, $style['columns'])) $s = $key + 1;
-                                    } else {
-                                        if ($columnNumber == $style['columns']) $s = $key + 1;
-                                    }
-                                } elseif (isset($style['rows'])) {
-                                    if (is_array($style['rows'])) {
-                                        if (in_array($rowNumber, $style['rows'])) $s = $key + 1;
-                                    } else {
-                                        if ($rowNumber == $style['rows']) $s = $key + 1;
-                                    }
-                                } elseif (isset($style['cells'])) {
-                                    if (is_array($style['cells'])) {
-                                        if (in_array($cell, $style['cells'])) {
-                                            $s = $key + 1;
-                                        }
-                                    } else {
-                                        if ($cell == $style['cells']) {
-                                            $s = $key + 1;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if (isset($this->cellsStyles[$cell])){
+                $s = $this->cellsStyles[$cell] + 1;
+            }
+            elseif (isset($this->rowsStyles[$rowNumber])) {
+                $s = $this->rowsStyles[$rowNumber] + 1;
+            }
+            elseif (isset($this->columnsStyles[$columnNumber])) {
+                $s = $this->columnsStyles[$columnNumber] + 1;
             }
         }
         if (is_numeric($value)) {
@@ -360,6 +610,9 @@ Class XLSXWriter
         }
     }
 
+    /**
+     * @return string
+     */
     protected function writeStylesXML()
     {
         $tempfile = $this->tempFilename();
@@ -669,17 +922,30 @@ Class XLSXWriter
     }
 
     /**
+     * Cache column names (A, B, C, D) to improve method performance
+     * @var array
+     */
+    private static $cachedXlsColumnNames = [];
+    /**
      * @param int $rowNumber zero based
      * @param int $columnNumber zero based
      * @return string Cell label/coordinates, ex: A1, C3, AA42
      */
     public static function xlsCell($rowNumber, $columnNumber)
     {
-        $n = $columnNumber;
-        for ($r = ""; $n >= 0; $n = intval($n / 26) - 1) {
-            $r = chr($n % 26 + 0x41) . $r;
+        if (!array_key_exists($columnNumber, self::$cachedXlsColumnNames)) {
+            $n = $columnNumber;
+            for ($xlsColumnName = ""; $n >= 0; $n = intval($n / 26) - 1) {
+                $xlsColumnName = chr($n % 26 + 0x41) . $xlsColumnName;
+            }
+            self::$cachedXlsColumnNames[$columnNumber] = $xlsColumnName;
         }
-        return $r . ($rowNumber + 1);
+        else {
+            $xlsColumnName = self::$cachedXlsColumnNames[$columnNumber];
+        }
+
+
+        return $xlsColumnName . ($rowNumber + 1);
     }
 
     /**
