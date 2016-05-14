@@ -377,7 +377,7 @@ Class XLSXWriter
         if (!empty($headerRow)) {
             fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($this->defaultStartRow + 1) . '">');
             foreach ($headerRow as $k => $v) {
-                $this->writeCell($fd, $this->defaultStartRow + 0, $this->defaultStartCol + $k, $sheetName);
+                $this->writeCell($fd, $this->defaultStartRow + 0, $this->defaultStartCol + $k, $v);
             }
             fwrite($fd, '</row>');
         }
