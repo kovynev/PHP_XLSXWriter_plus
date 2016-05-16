@@ -48,6 +48,8 @@ Class XLSXWriter
     protected $shared_string_count = 0;//count of non-unique references to the unique set
     protected $temp_files = array();
 
+    protected $useSharedStrings = false;
+
     public function __construct()
     {
     }
@@ -236,12 +238,12 @@ Class XLSXWriter
 
         $fd = $this->openSheetFile($sheetFilename);
         $this->writeDocumentHeader($fd, $maxCell, $tabselected);
-        $this->writeColumns($fd);
+        $this->writeColumnsWidth($fd);
 
         $this->sheetDataBegins($fd);
         $this->writeHeaders($fd, $sheetName, $headerRow);
         $this->writeData($fd, $data, $sheetName, $headerOffset, $cellFormats);
-        $this->writeCellsData($fd, $additionalData, $sheetName);
+        $this->writeCellsData($fd, $additionalData);
         $this->sheetDataEnds($fd);
 
         $this->mergeCells($fd, $sheetName);
@@ -287,12 +289,12 @@ Class XLSXWriter
 
         $fd = $this->openSheetFile($sheetFilename);
         $this->writeDocumentHeader($fd, '', $tabselected);
-        $this->writeColumns($fd);
+        $this->writeColumnsWidth($fd);
 
         $this->sheetDataBegins($fd);
         $this->writeHeaders($fd, $sheetName, $headerRow);
         $this->writeDataUnbuffered($fd, $filenameWithData, $headerOffset, $cellFormats, $rowsCount, $columnsCount);
-        $this->writeCellsData($fd, $additionalData, $sheetName);
+        $this->writeCellsData($fd, $additionalData);
         $this->sheetDataEnds($fd);
 
         $this->mergeCells($fd, $sheetName);
@@ -303,6 +305,61 @@ Class XLSXWriter
 
         fclose($fd);
     }
+
+
+    /**
+     * @param PDOStatement $query
+     * @param callable $rowMapper table columns
+     * @param string $sheetName
+     * @param array $headersTypes
+     * @param array $styles
+     * @param array $additionalData
+     * @throws Exception
+     */
+    public function writeSheetFromUnbufferedQuery($query,
+                                         $rowMapper,
+                                         $sheetName = '',
+                                         $headersTypes = [],
+                                         $styles = [],
+                                         $additionalData = [])
+    {
+        $styles = $this->prepareStyles($styles, $sheetName);
+        $this->setStyle($styles);
+        $sheetFilename = $this->tempFilename();
+
+        $sheet_default = 'Sheet' . (count($this->sheets_meta) + 1);
+        $sheetName = !empty($sheetName) ? $sheetName : $sheet_default;
+        $this->sheets_meta[] = array('filename' => $sheetFilename, 'sheetname' => $sheetName, 'xmlname' => strtolower($sheet_default) . ".xml");
+
+        $headerOffset = empty($headersTypes) ? 0 : $this->defaultStartRow + 1;
+        $rowsCount = 0;
+        $columnsCount = 0;
+
+        $tabselected = count($this->sheets_meta) == 1 ? 'true' : 'false';//only first sheet is selected
+        $cellFormats = array_values($headersTypes);
+        $headerRow = array_keys($headersTypes);
+
+        $fd = $this->openSheetFile($sheetFilename);
+        $this->writeDocumentHeader($fd, '', $tabselected);
+        $this->writeColumnsWidth($fd);
+
+        $this->sheetDataBegins($fd);
+        $this->writeHeaders($fd, $sheetName, $headerRow);
+
+        $this->writeDataFromQuery($fd, $query, $rowMapper, $headerOffset, $cellFormats, $rowsCount, $columnsCount);
+
+        $this->writeCellsData($fd, $additionalData);
+        $this->sheetDataEnds($fd);
+
+        $this->mergeCells($fd, $sheetName);
+        $this->writeDocumentBottom($fd);
+
+        $maxCell = self::xlsCell($headerOffset + $rowsCount - 1, $columnsCount - 1);
+        $this->correctDocumentDimension($fd, $maxCell);
+
+        fclose($fd);
+    }
+
 
     private function openSheetFile($sheetFilename) {
         $fd = fopen($sheetFilename, "w+");
@@ -351,8 +408,7 @@ Class XLSXWriter
         fseek($fd, 0, SEEK_END);
     }
 
-
-    private function writeColumns($fd) {
+    private function writeColumnsWidth($fd) {
         fwrite($fd, '<cols>');
         //fetch all columns with custom width
         $customWidthColumns = [];
@@ -444,7 +500,13 @@ Class XLSXWriter
                     } else if ($value{0} == '=') {
                         $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
                     } else if ($value !== '') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                        if ($this->useSharedStrings) {
+                            $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                        }
+                        else {
+                            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+
+                        }
                     }
                 }
                 $this->dumpToBuffer($fd, '</row>');
@@ -456,12 +518,85 @@ Class XLSXWriter
         fclose($fData);
     }
 
+
+    /**
+     * @param $fd
+     * @param PDOStatement $query
+     * @param $headerOffset
+     * @param $cellFormats
+     * @param $rowsCount
+     * @param $columnsCount
+     */
+    private function writeDataFromQuery($fd, $query, $rowMapper, $headerOffset, $cellFormats, &$rowsCount, &$columnsCount) {
+
+        $i = 0;
+        $columnsCount = count($rowMapper);
+
+        $columnsCount = null;
+
+        while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
+            if ($row) {
+                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">');
+
+                $row = $rowMapper($row);
+
+                if ($columnsCount == null) {
+                    $columnsCount = count($row);
+                }
+
+                $columnOffset = 0;
+                foreach($row as $key => $value) {
+                    $rowNumber = $i + $headerOffset;
+                    $columnNumber = $this->defaultStartCol + $columnOffset;
+                    $cellType = $cellFormats[$columnNumber];
+
+                    $cell = self::xlsCell($rowNumber, $columnNumber);
+                    $s = 0;
+                    if (isset($this->cellsStyles[$cell])){
+                        $s = $this->cellsStyles[$cell] + 1;
+                    }
+                    elseif (isset($this->rowsStyles[$rowNumber])) {
+                        $s = $this->rowsStyles[$rowNumber] + 1;
+                    }
+                    elseif (isset($this->columnsStyles[$columnNumber])) {
+                        $s = $this->columnsStyles[$columnNumber] + 1;
+                    }
+                    if (is_numeric($value)) {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'); //int, float, etc
+                    } else if ($cellType == 'date') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . (int) (self::convertDateTime($value)) . '</v></c>');
+                    } else if ($cellType == 'datetime') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>');
+                    } else if ($value == '') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>');
+                    } else if ($value{0} == '=') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
+                    } else if ($value !== '') {
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="inlineStr"><is><t>' . self::xmlspecialchars($value) . '</t></is></c>');
+
+                    }
+
+                    $columnOffset++;
+                }
+
+                $this->dumpToBuffer($fd, '</row>');
+
+                $rowsCount++;
+            }
+            $i++;
+        }
+        $this->emptyBuffer($fd);
+
+//        fclose($fData);
+    }
+
+
     private $writeOperationsCount = 0;
     private $writeBuffer = '';
 
     /**
      * It is faster to concat strings and write it to file later.
-     * This method puts strings to file once at 1000 calls
+     * This method puts string to file once at 1000 calls
      * @param $fd
      * @param $string
      */
@@ -507,9 +642,8 @@ Class XLSXWriter
     /**
      * @param $fd
      * @param array $cellsData
-     * @param string $sheetName
      */
-    private function writeCellsData($fd, $cellsData, $sheetName) {
+    private function writeCellsData($fd, $cellsData) {
         $additionalDataMapped = [];
         foreach ($cellsData as $xlsCell => $row) {
             $zeroBasedCoordinates = self::cellCoordinates($xlsCell);
@@ -573,6 +707,13 @@ Class XLSXWriter
     }
 
     /**
+     * @param bool $value
+     */
+    public function useSharedStrings($value) {
+        $this->useSharedStrings = $value;
+    }
+
+    /**
      * @param $fd
      * @param int $rowNumber
      * @param int $columnNumber
@@ -606,7 +747,12 @@ Class XLSXWriter
         } else if ($value{0} == '=') {
             fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
         } else if ($value !== '') {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+            if ($this->useSharedStrings) {
+                $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+            }
+            else {
+                fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+            }
         }
     }
 
@@ -801,13 +947,16 @@ Class XLSXWriter
         return $tempfile;
     }
 
+    private $shared_string_counter = 0;
+
     protected function setSharedString($v)
     {
         if (isset($this->shared_strings[$v])) {
             $string_value = $this->shared_strings[$v];
         } else {
-            $string_value = count($this->shared_strings);
+            $string_value = $this->shared_string_counter;
             $this->shared_strings[$v] = $string_value;
+            $this->shared_string_counter++;
         }
         $this->shared_string_count++;//non-unique count
         return $string_value;
@@ -991,28 +1140,31 @@ Class XLSXWriter
     }
 
     //------------------------------------------------------------------
-    public static function convertDateTime($date_input) //thanks to Excel::Writer::XLSX::Worksheet.pm (perl)
+    public static function convertDateTime($date_time) //thanks to Excel::Writer::XLSX::Worksheet.pm (perl)
     {
-        $days = 0;    # Number of days since epoch
         $seconds = 0;    # Time expressed as fraction of 24h hours in seconds
         $year = $month = $day = 0;
-        $hour = $min = $sec = 0;
 
-        $date_time = $date_input;
-        if (preg_match("/(\d{4})\-(\d{2})\-(\d{2})/", $date_time, $matches)) {
-            list($junk, $year, $month, $day) = $matches;
+        //2016-03-02 12:43:00
+        if (strlen($date_time) >= 9) {
+            $year = (int)($date_time[0] . $date_time[1] . $date_time[2] . $date_time[3]);
+            $month = (int)($date_time[5] . $date_time[6]);
+            $day = (int)($date_time[8] . $date_time[9]);
         }
-        if (preg_match("/(\d{2}):(\d{2}):(\d{2})/", $date_time, $matches)) {
-            list($junk, $hour, $min, $sec) = $matches;
-            $seconds = ($hour * 60 * 60 + $min * 60 + $sec) / (24 * 60 * 60);
+
+        if (strlen($date_time) == 19) {
+            $hour = (int)($date_time[11] . $date_time[12]);
+            $min = (int)($date_time[14] . $date_time[15]);
+            $sec = (int)($date_time[17] . $date_time[18]);
+
+            $seconds = ($hour * 3600 + $min * 60 + $sec) / 86400;
         }
 
         //using 1900 as epoch, not 1904, ignoring 1904 special case
-
         # Special cases for Excel.
-        if ("$year-$month-$day" == '1899-12-31') return $seconds;    # Excel 1900 epoch
-        if ("$year-$month-$day" == '1900-01-00') return $seconds;    # Excel 1900 epoch
-        if ("$year-$month-$day" == '1900-02-29') return 60 + $seconds;    # Excel false leapday
+        if ($year == 1899 && $month == 12 && $day == 31) return $seconds;    # Excel 1900 epoch
+        if ($year == 1900 && $month == 01 && $day == 00) return $seconds;    # Excel 1900 epoch
+        if ($year == 1900 && $month == 02 && $day == 29) return 60 + $seconds;    # Excel false leapday
 
         # We calculate the date by calculating the number of days since the epoch
         # and adjust for the number of leap days. We calculate the number of leap
@@ -1025,20 +1177,78 @@ Class XLSXWriter
 
         # Set month days and check for leap year.
         $leap = (($year % 400 == 0) || (($year % 4 == 0) && ($year % 100))) ? 1 : 0;
-        $mdays = array(31, ($leap ? 29 : 28), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31);
 
+        $februaryDays = ($leap ? 29 : 28);
+
+        $daysInMonth = 31;
+        if ($month == 2) {
+            $daysInMonth = $februaryDays;
+        } elseif ($month == 4 || $month == 6 || $month == 9 || $month == 11) {
+            $daysInMonth = 30;
+        }
         # Some boundary checks
         if ($year < $epoch || $year > 9999) return 0;
         if ($month < 1 || $month > 12) return 0;
-        if ($day < 1 || $day > $mdays[$month - 1]) return 0;
+        if ($day < 1 || $day > $daysInMonth) return 0;
 
         # Accumulate the number of days since the epoch.
         $days = $day;    # Add days for current month
-        $days += array_sum(array_slice($mdays, 0, $month - 1));    # Add days for past months
+        $lastMonth = $month - 1;
+        switch ($lastMonth) {
+            case 1: {
+                $days += 31;
+            }
+                break;
+            case 2: {
+                $days += 31 + $februaryDays;
+            }
+                break;
+            case 3: {
+                $days += $februaryDays + 62;
+            }
+                break;
+            case 4: {
+                $days += $februaryDays + 92;
+            }
+                break;
+            case 5: {
+                $days += $februaryDays + 123;
+            }
+                break;
+            case 6: {
+                $days += $februaryDays + 153;
+            }
+                break;
+            case 7: {
+                $days += $februaryDays + 184;
+            }
+                break;
+            case 8: {
+                $days += $februaryDays + 215;
+            }
+                break;
+            case 9: {
+                $days += $februaryDays + 245;
+            }
+                break;
+            case 10: {
+                $days += $februaryDays + 276;
+            }
+                break;
+            case 11: {
+                $days += $februaryDays + 306;
+            }
+                break;
+            case 12: {
+                $days += $februaryDays + 337;
+            }
+                break;
+        }
+
         $days += $range * 365;                      # Add days for past years
-        $days += intval(($range) / 4);             # Add leapdays
-        $days -= intval(($range + $offset) / 100); # Subtract 100 year leapdays
-        $days += intval(($range + $offset + $norm) / 400);  # Add 400 year leapdays
+        $days += (int)(($range) / 4);             # Add leapdays
+        $days -= (int)(($range + $offset) / 100); # Subtract 100 year leapdays
+        $days += (int)(($range + $offset + $norm) / 400);  # Add 400 year leapdays
         $days -= $leap;                                      # Already counted above
 
         # Adjust for Excel erroneously treating 1900 as a leap year.
