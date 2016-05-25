@@ -94,21 +94,27 @@ Class XLSXWriter
 
         foreach ($this->defaultStyle as $styleIndex => $style) {
             if (!array_key_exists('width', $style)) {
-                $columns = $style['columns'];
-                $rows = $style['rows'];
-                $cells = $style['cells'];
-                if ($cells) {
-                    foreach ($cells as $cellXlsIndex) {
+                if (!array_key_exists('cells', $style)) {
+                    $style['cells'] = [];
+                }
+                if (!array_key_exists('columns', $style)) {
+                    $style['columns'] = [];
+                }
+                if (!array_key_exists('rows', $style)) {
+                    $style['rows'] = [];
+                }
+                if ($style['cells']) {
+                    foreach ($style['cells'] as $cellXlsIndex) {
                         $this->cellsStyles[$cellXlsIndex] = $styleIndex;
                     }
                 }
-                else if ($columns) {
-                    foreach ($columns as $columnIndex) {
+                else if ($style['columns']) {
+                    foreach ($style['columns'] as $columnIndex) {
                         $this->columnsStyles[$columnIndex] = $styleIndex;
                     }
                 }
-                elseif ($rows) {
-                    foreach ($rows as $rowIndex) {
+                elseif ($style['rows']) {
+                    foreach ($style['rows'] as $rowIndex) {
                         $this->rowsStyles[$rowIndex] = $styleIndex;
                     }
                 }
@@ -344,11 +350,10 @@ Class XLSXWriter
         $this->writeColumnsWidth($fd);
 
         $this->sheetDataBegins($fd);
+        $this->writeCellsData($fd, $additionalData);
         $this->writeHeaders($fd, $sheetName, $headerRow);
-
         $this->writeDataFromQuery($fd, $query, $rowMapper, $headerOffset, $cellFormats, $rowsCount, $columnsCount);
 
-        $this->writeCellsData($fd, $additionalData);
         $this->sheetDataEnds($fd);
 
         $this->mergeCells($fd, $sheetName);
@@ -379,7 +384,11 @@ Class XLSXWriter
 
     private function writeDocumentHeader($fd, $maxCell, $tabselected) {
         fwrite($fd, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . PHP_EOL);
-        fwrite($fd, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'. PHP_EOL);
+        fwrite($fd, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                            xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+                            xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+                            mc:Ignorable="x14ac"
+                            xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac">'. PHP_EOL);
         fwrite($fd, '<sheetPr filterMode="false">'. PHP_EOL);
         fwrite($fd, '<pageSetUpPr fitToPage="false"/>'. PHP_EOL);
         fwrite($fd, '</sheetPr>'. PHP_EOL);
@@ -401,6 +410,11 @@ Class XLSXWriter
                     $writePos = $lastPos + 19;
                     fseek($fd, $writePos);
                     fwrite($fd, $maxCell);
+                    fwrite($fd, '"/>');
+                    if (($enclosedTagPos = strripos($line, '"/>')) !== false) {
+                        fseek($fd, $lastPos + $enclosedTagPos);
+                        fwrite($fd, '   ');
+                    }
                     break;
                 }
             }
@@ -423,19 +437,19 @@ Class XLSXWriter
         ksort($customWidthColumns);
         $i = 1;
         foreach ($customWidthColumns as $columnNumber => $width) {
-            fwrite($fd, sprintf('<col min="%d" max="%d" customWidth="true" width="%s" style="0" />', $i, $i, $width));
+            fwrite($fd, sprintf('<col min="%d" max="%d" customWidth="true" width="%s" style="0" />'. PHP_EOL, $i, $i, $width));
             $i++;
         }
-        fwrite($fd, '</cols>');
+        fwrite($fd, '</cols>'. PHP_EOL);
     }
 
     private function writeHeaders($fd, $sheetName, $headerRow) {
         if (!empty($headerRow)) {
-            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($this->defaultStartRow + 1) . '">');
+            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($this->defaultStartRow + 1) . '">'. PHP_EOL);
             foreach ($headerRow as $k => $v) {
                 $this->writeCell($fd, $this->defaultStartRow + 0, $this->defaultStartCol + $k, $v);
             }
-            fwrite($fd, '</row>');
+            fwrite($fd, '</row>'. PHP_EOL);
         }
     }
 
@@ -466,7 +480,7 @@ Class XLSXWriter
                 if ($rowItemsCount === null) {
                     $rowItemsCount = count($row);
                 }
-                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">');
+                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">'. PHP_EOL);
                 for ($itemIndex = 0; $itemIndex < $rowItemsCount; $itemIndex++) {
                     $rowNumber = $i + $headerOffset;
                     $columnNumber = $this->defaultStartCol + $itemIndex;
@@ -490,26 +504,25 @@ Class XLSXWriter
                     }
 
                     if (is_numeric($value)) {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'); //int, float, etc
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'. PHP_EOL); //int, float, etc
                     } else if ($cellType == 'date') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . intval(self::convertDateTime($value)) . '</v></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . intval(self::convertDateTime($value)) . '</v></c>'. PHP_EOL);
                     } else if ($cellType == 'datetime') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>'. PHP_EOL);
                     } else if ($value == '') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>'. PHP_EOL);
                     } else if ($value{0} == '=') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>'. PHP_EOL);
                     } else if ($value !== '') {
                         if ($this->useSharedStrings) {
-                            $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                            $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>'. PHP_EOL);
                         }
                         else {
-                            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
-
+                            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>'. PHP_EOL);
                         }
                     }
                 }
-                $this->dumpToBuffer($fd, '</row>');
+                $this->dumpToBuffer($fd, '</row>'. PHP_EOL);
             }
             $i++;
         }
@@ -536,7 +549,7 @@ Class XLSXWriter
 
         while ($row = $query->fetch(PDO::FETCH_ASSOC)) {
             if ($row) {
-                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">');
+                $this->dumpToBuffer($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="'.($i + $headerOffset + 1).'">'. PHP_EOL);
 
                 $row = $rowMapper($row);
 
@@ -562,24 +575,24 @@ Class XLSXWriter
                         $s = $this->columnsStyles[$columnNumber] + 1;
                     }
                     if (is_numeric($value)) {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'); //int, float, etc
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'. PHP_EOL); //int, float, etc
                     } else if ($cellType == 'date') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . (int) (self::convertDateTime($value)) . '</v></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . (int) (self::convertDateTime($value)) . '</v></c>'. PHP_EOL);
                     } else if ($cellType == 'datetime') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>'. PHP_EOL);
                     } else if ($value == '') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '"/>'. PHP_EOL);
                     } else if ($value{0} == '=') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>'. PHP_EOL);
                     } else if ($value !== '') {
-                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="inlineStr"><is><t>' . self::xmlspecialchars($value) . '</t></is></c>');
+                        $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="inlineStr"><is><t>' . self::xmlspecialchars($value) . '</t></is></c>'. PHP_EOL);
 
                     }
 
                     $columnOffset++;
                 }
 
-                $this->dumpToBuffer($fd, '</row>');
+                $this->dumpToBuffer($fd, '</row>'. PHP_EOL);
 
                 $rowsCount++;
             }
@@ -631,7 +644,7 @@ Class XLSXWriter
      */
     private function writeData($fd, $data, $sheetName, $headerOffset, $cellFormats) {
         foreach ($data as $i => $row) {
-            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($i + $headerOffset + 1) . '">');
+            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($i + $headerOffset + 1) . '">'. PHP_EOL);
             foreach ($row as $k => $v) {
                 $this->writeCell($fd, $i + $headerOffset, $this->defaultStartCol + $k, $v, $cellFormats[$k]);
             }
@@ -650,8 +663,9 @@ Class XLSXWriter
             list($i, $k) = $zeroBasedCoordinates;
             $additionalDataMapped[$i][$k] = $row;
         }
+        ksort($additionalDataMapped);
         foreach ($additionalDataMapped as $i => $row) {
-            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($i + 1) . '">');
+            fwrite($fd, '<row collapsed="false" customFormat="false" customHeight="false" hidden="false" ht="12.1" outlineLevel="0" r="' . ($i + 1) . '">'. PHP_EOL);
             foreach ($row as $k => $v) {
                 $cellValue = $v;
                 $cellType = '';
@@ -660,7 +674,7 @@ Class XLSXWriter
                 }
                 $this->writeCell($fd, $i, $k, $cellValue, $cellType);
             }
-            fwrite($fd, '</row>');
+            fwrite($fd, '</row>'. PHP_EOL);
         }
     }
 
@@ -680,14 +694,14 @@ Class XLSXWriter
     }
 
     private function writeDocumentBottom($fd) {
-        fwrite($fd, '<printOptions headings="false" gridLines="false" gridLinesSet="true" horizontalCentered="false" verticalCentered="false"/>');
-        fwrite($fd, '<pageMargins left="0.5" right="0.5" top="1.0" bottom="1.0" header="0.5" footer="0.5"/>');
-        fwrite($fd, '<pageSetup blackAndWhite="false" cellComments="none" copies="1" draft="false" firstPageNumber="1" fitToHeight="1" fitToWidth="1" horizontalDpi="300" orientation="portrait" pageOrder="downThenOver" paperSize="1" scale="100" useFirstPageNumber="true" usePrinterDefaults="false" verticalDpi="300"/>');
-        fwrite($fd, '<headerFooter differentFirst="false" differentOddEven="false">');
-        fwrite($fd, '<oddHeader>&amp;C&amp;&quot;Times New Roman,Regular&quot;&amp;12&amp;A</oddHeader>');
-        fwrite($fd, '<oddFooter>&amp;C&amp;&quot;Times New Roman,Regular&quot;&amp;12Page &amp;P</oddFooter>');
-        fwrite($fd, '</headerFooter>');
-        fwrite($fd, '</worksheet>');
+        fwrite($fd, '<printOptions headings="false" gridLines="false" gridLinesSet="true" horizontalCentered="false" verticalCentered="false"/>'. PHP_EOL);
+        fwrite($fd, '<pageMargins left="0.5" right="0.5" top="1.0" bottom="1.0" header="0.5" footer="0.5"/>'. PHP_EOL);
+        fwrite($fd, '<pageSetup blackAndWhite="false" cellComments="none" copies="1" draft="false" firstPageNumber="1" fitToHeight="1" fitToWidth="1" horizontalDpi="300" orientation="portrait" pageOrder="downThenOver" paperSize="1" scale="100" useFirstPageNumber="true" usePrinterDefaults="false" verticalDpi="300"/>'. PHP_EOL);
+        fwrite($fd, '<headerFooter differentFirst="false" differentOddEven="false">'. PHP_EOL);
+        fwrite($fd, '<oddHeader>&amp;C&amp;&quot;Times New Roman,Regular&quot;&amp;12&amp;A</oddHeader>'. PHP_EOL);
+        fwrite($fd, '<oddFooter>&amp;C&amp;&quot;Times New Roman,Regular&quot;&amp;12Page &amp;P</oddFooter>'. PHP_EOL);
+        fwrite($fd, '</headerFooter>'. PHP_EOL);
+        fwrite($fd, '</worksheet>'. PHP_EOL);
     }
 
     /**
@@ -737,21 +751,21 @@ Class XLSXWriter
             }
         }
         if (is_numeric($value)) {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'); //int, float, etc
+            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . ($value * 1) . '</v></c>'. PHP_EOL); //int, float, etc
         } else if ($cellType == 'date') {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . intval(self::convertDateTime($value)) . '</v></c>');
+            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="n"><v>' . intval(self::convertDateTime($value)) . '</v></c>'. PHP_EOL);
         } else if ($cellType == 'datetime') {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>');
+            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '"><v>' . self::convertDateTime($value) . '</v></c>'. PHP_EOL);
         } else if ($value == '') {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '"/>');
+            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '"/>'. PHP_EOL);
         } else if ($value{0} == '=') {
-            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>');
+            fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><f>' . self::xmlspecialchars($value) . '</f></c>'. PHP_EOL);
         } else if ($value !== '') {
             if ($this->useSharedStrings) {
-                $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                $this->dumpToBuffer($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>'. PHP_EOL);
             }
             else {
-                fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>');
+                fwrite($fd, '<c r="' . $cell . '" s="' . $s . '" t="s"><v>' . self::xmlspecialchars($this->setSharedString($value)) . '</v></c>'. PHP_EOL);
             }
         }
     }
@@ -767,8 +781,8 @@ Class XLSXWriter
             self::log("write failed in " . __CLASS__ . "::" . __FUNCTION__ . ".");
             return;
         }
-        fwrite($fd, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' . "\n");
-        fwrite($fd, '<styleSheet xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac" mc:Ignorable="x14ac" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">');
+        fwrite($fd, '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'. PHP_EOL);
+        fwrite($fd, '<styleSheet xmlns:x14ac="http://schemas.microsoft.com/office/spreadsheetml/2009/9/ac" mc:Ignorable="x14ac" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'. PHP_EOL);
         if ($this->defaultStyle) {
             foreach ($this->defaultStyle as $style) {
                 if (isset($style['sheet'])) {
@@ -776,18 +790,18 @@ Class XLSXWriter
                 }
             }
         }
-        fwrite($fd, '<fonts x14ac:knownFonts="1" count="' . $this->fontsCount . '">');
-        fwrite($fd, '	<font>');
-        fwrite($fd, '		<sz val="' . $this->defaultFontSize . '"/>');
+        fwrite($fd, '<fonts x14ac:knownFonts="1" count="' . $this->fontsCount . '">'. PHP_EOL);
+        fwrite($fd, '	<font>'. PHP_EOL);
+        fwrite($fd, '		<sz val="' . $this->defaultFontSize . '"/>'. PHP_EOL);
         fwrite($fd, '		<color theme="1"/>');
-        fwrite($fd, '		<name val="' . $this->defaultFontName . '"/>');
-        fwrite($fd, '		<family val="2"/>');
+        fwrite($fd, '		<name val="' . $this->defaultFontName . '"/>'. PHP_EOL);
+        fwrite($fd, '		<family val="2"/>'. PHP_EOL);
         if ($this->defaultFontName == 'MS Sans Serif') {
-            fwrite($fd, '		<charset val="204"/>');
+            fwrite($fd, '		<charset val="204"/>'. PHP_EOL);
         } else if ($this->defaultFontName == 'Calibri') {
-            fwrite($fd, '		<scheme val="minor"/>');
+            fwrite($fd, '		<scheme val="minor"/>'. PHP_EOL);
         } else {
-            fwrite($fd, '		<charset val="204"/>');
+            fwrite($fd, '		<charset val="204"/>'. PHP_EOL);
         }
         fwrite($fd, '	</font>');
         if ($this->defaultStyle) {
