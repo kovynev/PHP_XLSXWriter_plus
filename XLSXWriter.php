@@ -484,13 +484,15 @@ class XLSXWriter
      * @param string $sheetName
      */
     private function mergeCells($fd, $sheetName) {
-        $sheet = $this->sheets[$sheetName];
-        if (!empty($sheet->merge_cells)) {
-            $this->writeToBuffer($fd, '<mergeCells>');
-            foreach ($sheet->merge_cells as $range) {
-                $this->writeToBuffer($fd, '<mergeCell ref="' . $range . '"/>');
+        if (is_array($this->sheets) && array_key_exists($sheetName, $this->sheets)) {
+            $sheet = $this->sheets[$sheetName];
+            if (!empty($sheet->merge_cells)) {
+                $this->writeToBuffer($fd, '<mergeCells>');
+                foreach ($sheet->merge_cells as $range) {
+                    $this->writeToBuffer($fd, '<mergeCell ref="' . $range . '"/>');
+                }
+                $this->writeToBuffer($fd, '</mergeCells>');
             }
-            $this->writeToBuffer($fd, '</mergeCells>');
         }
     }
 
@@ -944,19 +946,16 @@ class XLSXWriter
         return [$rowNumber, $columnNumber];
     }
 
-    //------------------------------------------------------------------
     public static function log($string)
     {
         file_put_contents("php://stderr", date("Y-m-d H:i:s:") . rtrim(is_array($string) ? json_encode($string) : $string) . "\n");
     }
 
-    //------------------------------------------------------------------
     public static function xmlspecialchars($val)
     {
         return str_replace("'", "&#39;", htmlspecialchars($val));
     }
 
-    //------------------------------------------------------------------
     public static function array_first_key(array $arr)
     {
         reset($arr);
@@ -964,13 +963,16 @@ class XLSXWriter
         return $first_key;
     }
 
-    //------------------------------------------------------------------
+    /**
+     * Expected data format: 2016-03-02 12:43:00
+     * @param string $date_time
+     * @return int
+     */
     public static function convertDateTime($date_time) //thanks to Excel::Writer::XLSX::Worksheet.pm (perl)
     {
         $seconds = 0;    # Time expressed as fraction of 24h hours in seconds
         $year = $month = $day = 0;
 
-        //2016-03-02 12:43:00
         if (strlen($date_time) >= 9) {
             $year = (int)($date_time[0] . $date_time[1] . $date_time[2] . $date_time[3]);
             $month = (int)($date_time[5] . $date_time[6]);
@@ -1070,18 +1072,21 @@ class XLSXWriter
                 break;
         }
 
-        $days += $range * 365;                      # Add days for past years
-        $days += (int)(($range) / 4);             # Add leapdays
-        $days -= (int)(($range + $offset) / 100); # Subtract 100 year leapdays
-        $days += (int)(($range + $offset + $norm) / 400);  # Add 400 year leapdays
-        $days -= $leap;                                      # Already counted above
-
-        # Adjust for Excel erroneously treating 1900 as a leap year.
+        //Add days for past years
+        $days += $range * 365;
+        //Add leapdays
+        $days += (int)(($range) / 4);
+        //Subtract 100 year leapdays
+        $days -= (int)(($range + $offset) / 100);
+        //Add 400 year leapdays
+        $days += (int)(($range + $offset + $norm) / 400);
+        //Already counted above
+        $days -= $leap;
+        //Adjust for Excel erroneously treating 1900 as a leap year.
         if ($days > 59) {
             $days++;
         }
 
         return $days + $seconds;
     }
-    //------------------------------------------------------------------
 }
